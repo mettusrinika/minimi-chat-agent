@@ -1,0 +1,7 @@
+fastapi>=0.110
+uvicorn>=0.29
+google-genai>=1.0
+ddgs>=9.0
+pydantic>=2.0
+pytest>=8.0
+tzdata>=2024.1

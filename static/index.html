@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chat agent</title>
+<style>
+:root{--bg:#fff;--fg:#1a1a1a;--muted:#6b6b6b;--card:#f3f3f1;--me:#e3ebfb;--line:#ddd}
+@media (prefers-color-scheme:dark){:root{--bg:#161616;--fg:#eee;--muted:#9a9a9a;--card:#222;--me:#27324d;--line:#333}}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,sans-serif;display:flex;flex-direction:column;max-width:760px;margin:0 auto}
+#log{flex:1;overflow-y:auto;padding:16px}
+.msg{margin:0 0 14px;padding:10px 12px;border-radius:10px;background:var(--card);max-width:92%;word-wrap:break-word}
+.msg.user{background:var(--me);margin-left:auto}
+.meta{font-size:12px;color:var(--muted);margin-top:4px}
+.status{font-size:13px;color:var(--muted);font-style:italic}
+.src{font-size:12px;margin-top:6px}
+a{color:inherit}
+form{display:flex;gap:8px;padding:12px;border-top:1px solid var(--line)}
+input{flex:1;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg);font:inherit}
+button{padding:10px 16px;border:0;border-radius:8px;background:var(--fg);color:var(--bg);font:inherit;cursor:pointer}
+button:disabled{opacity:.5}
+</style>
+</head>
+<body>
+<div id="log"></div>
+<form id="f"><input id="q" placeholder="Ask anything…" autocomplete="off" autofocus><button id="b">Send</button></form>
+<script>
+let sid;
+try { sid = localStorage.getItem("sid"); } catch (e) {}
+if (!sid) { sid = crypto.randomUUID(); try { localStorage.setItem("sid", sid); } catch (e) {} }
+
+const log = document.getElementById("log"), f = document.getElementById("f"),
+      q = document.getElementById("q"), b = document.getElementById("b");
+
+function render(t) {
+  const esc = t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return esc
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+    .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+    .replace(/\n/g, "<br>");
+}
+function when(iso) { return new Date(iso).toLocaleString(); }
+function add(role, text, iso) {
+  const d = document.createElement("div");
+  d.className = "msg " + role;
+  d.innerHTML = '<div class="body">' + render(text) + '</div>' + (iso ? '<div class="meta">' + when(iso) + '</div>' : "");
+  log.appendChild(d); log.scrollTop = log.scrollHeight;
+  return d;
+}
+
+fetch("/history?session_id=" + sid).then(r => r.json()).then(rows => rows.forEach(r => add(r.role, r.content, r.created_at))).catch(() => {});
+
+f.addEventListener("submit", async e => {
+  e.preventDefault();
+  const text = q.value.trim(); if (!text) return;
+  q.value = ""; b.disabled = true;
+  add("user", text, new Date().toISOString());
+  const bubble = add("assistant", "…");
+  const body = bubble.querySelector(".body");
+  let acc = "";
+  try {
+    const res = await fetch("/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: sid, message: text, tz: Intl.DateTimeFormat().resolvedOptions().timeZone }) });
+    const reader = res.body.getReader(), dec = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { done, value } = await reader.read(); if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf("\n\n")) >= 0) {
+        const line = buf.slice(0, i); buf = buf.slice(i + 2);
+        if (!line.startsWith("data: ")) continue;
+        const ev = JSON.parse(line.slice(6));
+        if (ev.type === "token") { acc += ev.text; body.innerHTML = render(acc); }
+        else if (ev.type === "reset") { acc = ""; body.innerHTML = ""; }
+        else if (ev.type === "status") { body.innerHTML = '<span class="status">' + render(ev.text) + '</span>'; }
+        else if (ev.type === "sources") {
+          const s = document.createElement("div"); s.className = "src";
+          s.innerHTML = "Sources: " + ev.items.map(x => '<a href="' + x.url.replace(/"/g, "") + '" title="' + x.title.replace(/"/g, "'").replace(/</g, "") + '" target="_blank" rel="noopener">' + x.n + '</a>').join(" ");
+          bubble.appendChild(s);
+        }
+        else if (ev.type === "error") { body.textContent = "Error: " + ev.text; }
+        log.scrollTop = log.scrollHeight;
+      }
+    }
+  } catch (err) { body.textContent = "Network error: " + err.message; }
+  b.disabled = false; q.focus();
+});
+</script>
+</body>
+</html>
